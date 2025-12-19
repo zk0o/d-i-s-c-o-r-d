@@ -1,0 +1,526 @@
+(function() {
+    'use strict';
+    
+    // Prevent multiple injections
+    if (window.DiscordQuestAutoComplete) {
+        console.log('Discord Quest Auto-Complete already running!');
+        return;
+    }
+    window.DiscordQuestAutoComplete = true;
+
+    // Webpack extraction
+    let wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
+    webpackChunkdiscord_app.pop();
+
+    const Stores = {
+        ApplicationStreaming: Object.values(wpRequire.c).find(x => x?.exports?.Z?.__proto__?.getStreamerActiveStreamMetadata)?.exports?.Z,
+        RunningGame: Object.values(wpRequire.c).find(x => x?.exports?.ZP?.getRunningGames)?.exports?.ZP,
+        Quests: Object.values(wpRequire.c).find(x => x?.exports?.Z?.__proto__?.getQuest)?.exports?.Z,
+        Channel: Object.values(wpRequire.c).find(x => x?.exports?.Z?.__proto__?.getAllThreadsForParent)?.exports?.Z,
+        GuildChannel: Object.values(wpRequire.c).find(x => x?.exports?.ZP?.getSFWDefaultChannel)?.exports?.ZP,
+        FluxDispatcher: Object.values(wpRequire.c).find(x => x?.exports?.Z?.__proto__?.flushWaitQueue)?.exports?.Z,
+        api: Object.values(wpRequire.c).find(x => x?.exports?.tn?.get)?.exports?.tn
+    };
+
+    const isApp = typeof DiscordNative !== "undefined";
+
+    // Quest Manager
+    class QuestManager {
+        constructor() {
+            this.activeQuests = [];
+            this.completedQuests = [];
+            this.running = {};
+            this.logs = [];
+        }
+
+        log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            this.logs.push({ timestamp, message, type });
+            console.log(`[${timestamp}] ${message}`);
+            this.updateUI();
+        }
+
+        async loadQuests() {
+            this.activeQuests = [...Stores.Quests.quests.values()].filter(x => 
+                x.id !== "1412491570820812933" && 
+                x.userStatus?.enrolledAt && 
+                !x.userStatus?.completedAt && 
+                new Date(x.config.expiresAt).getTime() > Date.now()
+            );
+            this.log(`Found ${this.activeQuests.length} active quest(s)`, 'success');
+            return this.activeQuests;
+        }
+
+        async claimReward(questId) {
+            try {
+                const response = await Stores.api.post({
+                    url: `/quests/${questId}/claim-reward`
+                });
+                this.log(`✅ Reward claimed for quest!`, 'success');
+                return response;
+            } catch (err) {
+                this.log(`❌ Failed to claim reward: ${err.message}`, 'error');
+                throw err;
+            }
+        }
+
+        async completeVideoQuest(quest) {
+            const taskName = ["WATCH_VIDEO", "WATCH_VIDEO_ON_MOBILE"].find(x => quest.config.taskConfig?.tasks?.[x] || quest.config.taskConfigV2?.tasks?.[x]);
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            const secondsNeeded = taskConfig.tasks[taskName]?.target || 0;
+            let secondsDone = quest.userStatus?.progress?.[taskName]?.value ?? 0;
+
+            this.log(`📹 Starting video quest: ${quest.config.messages.questName}`, 'info');
+            
+            const maxFuture = 10, speed = 7, interval = 1;
+            const enrolledAt = new Date(quest.userStatus.enrolledAt).getTime();
+            
+            while(secondsDone < secondsNeeded) {
+                const maxAllowed = Math.floor((Date.now() - enrolledAt)/1000) + maxFuture;
+                const diff = maxAllowed - secondsDone;
+                const timestamp = secondsDone + speed;
+                
+                if(diff >= speed) {
+                    try {
+                        const res = await Stores.api.post({
+                            url: `/quests/${quest.id}/video-progress`, 
+                            body: {timestamp: Math.min(secondsNeeded, timestamp + Math.random())}
+                        });
+                        
+                        secondsDone = Math.min(secondsNeeded, timestamp);
+                        this.log(`Progress: ${secondsDone}/${secondsNeeded}s`, 'info');
+                        
+                        if(res.body.completed_at != null) {
+                            this.log(`✅ Quest completed!`, 'success');
+                            await this.claimReward(quest.id);
+                            return true;
+                        }
+                    } catch (err) {
+                        this.log(`⚠️ API Error: ${err.message}`, 'error');
+                        break;
+                    }
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, interval * 1000));
+            }
+            
+            try {
+                await Stores.api.post({
+                    url: `/quests/${quest.id}/video-progress`, 
+                    body: {timestamp: secondsNeeded}
+                });
+                this.log(`✅ Quest completed!`, 'success');
+                await this.claimReward(quest.id);
+                return true;
+            } catch (err) {
+                this.log(`❌ Failed: ${err.message}`, 'error');
+                return false;
+            }
+        }
+
+        async completePlayOnDesktopQuest(quest) {
+            if(!isApp) {
+                this.log(`⚠️ Desktop app required`, 'warning');
+                return false;
+            }
+
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            const secondsNeeded = taskConfig.tasks.PLAY_ON_DESKTOP?.target || 0;
+            const applicationId = quest.config.application.id;
+            
+            this.log(`🎮 Starting play quest: ${quest.config.messages.questName}`, 'info');
+            
+            try {
+                const res = await Stores.api.get({url: `/applications/public?application_ids=${applicationId}`});
+                const appData = res.body[0];
+                const exeName = appData.executables.find(x => x.os === "win32").name.replace(">","");
+                const pid = Math.floor(Math.random() * 30000) + 1000;
+                
+                const fakeGame = {
+                    cmdLine: `C:\\Program Files\\${appData.name}\\${exeName}`,
+                    exeName,
+                    exePath: `c:/program files/${appData.name.toLowerCase()}/${exeName}`,
+                    hidden: false,
+                    isLauncher: false,
+                    id: applicationId,
+                    name: appData.name,
+                    pid: pid,
+                    pidPath: [pid],
+                    processName: appData.name,
+                    start: Date.now(),
+                };
+                
+                const realGames = Stores.RunningGame.getRunningGames();
+                const realGetRunningGames = Stores.RunningGame.getRunningGames;
+                const realGetGameForPID = Stores.RunningGame.getGameForPID;
+                
+                Stores.RunningGame.getRunningGames = () => [fakeGame];
+                Stores.RunningGame.getGameForPID = (pid) => fakeGame;
+                Stores.FluxDispatcher.dispatch({
+                    type: "RUNNING_GAMES_CHANGE", 
+                    removed: realGames, 
+                    added: [fakeGame], 
+                    games: [fakeGame]
+                });
+                
+                return new Promise((resolve) => {
+                    let fn = data => {
+                        let progress = Math.floor(data.userStatus.progress.PLAY_ON_DESKTOP.value);
+                        this.log(`Progress: ${progress}/${secondsNeeded}s`, 'info');
+                        
+                        if(progress >= secondsNeeded) {
+                            this.log(`✅ Quest completed!`, 'success');
+                            
+                            Stores.RunningGame.getRunningGames = realGetRunningGames;
+                            Stores.RunningGame.getGameForPID = realGetGameForPID;
+                            Stores.FluxDispatcher.dispatch({
+                                type: "RUNNING_GAMES_CHANGE", 
+                                removed: [fakeGame], 
+                                added: [], 
+                                games: []
+                            });
+                            Stores.FluxDispatcher.unsubscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", fn);
+                            
+                            this.claimReward(quest.id).then(() => resolve(true));
+                        }
+                    };
+                    Stores.FluxDispatcher.subscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", fn);
+                });
+            } catch (err) {
+                this.log(`❌ Error: ${err.message}`, 'error');
+                return false;
+            }
+        }
+
+        async completeStreamOnDesktopQuest(quest) {
+            if(!isApp) {
+                this.log(`⚠️ Desktop app required`, 'warning');
+                return false;
+            }
+
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            const secondsNeeded = taskConfig.tasks.STREAM_ON_DESKTOP?.target || 0;
+            const applicationId = quest.config.application.id;
+            const pid = Math.floor(Math.random() * 30000) + 1000;
+            
+            this.log(`📡 Starting stream quest: ${quest.config.messages.questName}`, 'info');
+            this.log(`⚠️ You need at least 1 other person in VC!`, 'warning');
+            
+            let realFunc = Stores.ApplicationStreaming.getStreamerActiveStreamMetadata;
+            Stores.ApplicationStreaming.getStreamerActiveStreamMetadata = () => ({
+                id: applicationId,
+                pid,
+                sourceName: null
+            });
+            
+            return new Promise((resolve) => {
+                let fn = data => {
+                    let progress = Math.floor(data.userStatus.progress.STREAM_ON_DESKTOP.value);
+                    this.log(`Progress: ${progress}/${secondsNeeded}s`, 'info');
+                    
+                    if(progress >= secondsNeeded) {
+                        this.log(`✅ Quest completed!`, 'success');
+                        
+                        Stores.ApplicationStreaming.getStreamerActiveStreamMetadata = realFunc;
+                        Stores.FluxDispatcher.unsubscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", fn);
+                        
+                        this.claimReward(quest.id).then(() => resolve(true));
+                    }
+                };
+                Stores.FluxDispatcher.subscribe("QUESTS_SEND_HEARTBEAT_SUCCESS", fn);
+            });
+        }
+
+        async completePlayActivityQuest(quest) {
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            const secondsNeeded = taskConfig.tasks.PLAY_ACTIVITY?.target || 0;
+            
+            this.log(`🎯 Starting activity quest: ${quest.config.messages.questName}`, 'info');
+            
+            const channelId = Stores.Channel.getSortedPrivateChannels()[0]?.id ?? 
+                Object.values(Stores.GuildChannel.getAllGuilds()).find(x => x != null && x.VOCAL.length > 0).VOCAL[0].channel.id;
+            const streamKey = `call:${channelId}:1`;
+            
+            while(true) {
+                try {
+                    const res = await Stores.api.post({
+                        url: `/quests/${quest.id}/heartbeat`, 
+                        body: {stream_key: streamKey, terminal: false}
+                    });
+                    const progress = res.body.progress.PLAY_ACTIVITY.value;
+                    this.log(`Progress: ${progress}/${secondsNeeded}s`, 'info');
+                    
+                    if(progress >= secondsNeeded) {
+                        await Stores.api.post({
+                            url: `/quests/${quest.id}/heartbeat`, 
+                            body: {stream_key: streamKey, terminal: true}
+                        });
+                        this.log(`✅ Quest completed!`, 'success');
+                        await this.claimReward(quest.id);
+                        return true;
+                    }
+                    
+                    await new Promise(resolve => setTimeout(resolve, 20 * 1000));
+                } catch (err) {
+                    this.log(`❌ API Error: ${err.message}`, 'error');
+                    return false;
+                }
+            }
+        }
+
+        async autoCompleteQuest(quest) {
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            if (!taskConfig?.tasks) {
+                this.log(`❌ No valid task config`, 'error');
+                return false;
+            }
+
+            const taskName = ["WATCH_VIDEO", "WATCH_VIDEO_ON_MOBILE", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP", "PLAY_ACTIVITY"]
+                .find(x => taskConfig.tasks[x] != null);
+            
+            if (!taskName) {
+                this.log(`❌ Unsupported task type`, 'error');
+                return false;
+            }
+
+            this.running[quest.id] = true;
+
+            try {
+                switch(taskName) {
+                    case "WATCH_VIDEO":
+                    case "WATCH_VIDEO_ON_MOBILE":
+                        await this.completeVideoQuest(quest);
+                        break;
+                    case "PLAY_ON_DESKTOP":
+                        await this.completePlayOnDesktopQuest(quest);
+                        break;
+                    case "STREAM_ON_DESKTOP":
+                        await this.completeStreamOnDesktopQuest(quest);
+                        break;
+                    case "PLAY_ACTIVITY":
+                        await this.completePlayActivityQuest(quest);
+                        break;
+                }
+            } finally {
+                delete this.running[quest.id];
+            }
+        }
+
+        updateUI() {
+            if (window.updateQuestUI) {
+                window.updateQuestUI();
+            }
+        }
+    }
+
+    const manager = new QuestManager();
+    window.questManager = manager;
+
+    // Create UI
+    const styles = `
+        #quest-auto-ui {
+            position: fixed;
+            top: 50px;
+            right: 20px;
+            width: 400px;
+            max-height: 600px;
+            background: #2b2d31;
+            border-radius: 8px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.4);
+            color: #fff;
+            font-family: 'gg sans', 'Noto Sans', sans-serif;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+        }
+        #quest-auto-header {
+            background: #5865f2;
+            padding: 16px;
+            border-radius: 8px 8px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: move;
+        }
+        #quest-auto-header h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        #quest-auto-close {
+            background: none;
+            border: none;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #quest-auto-body {
+            padding: 16px;
+            overflow-y: auto;
+            flex: 1;
+        }
+        .quest-item {
+            background: #383a40;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+        .quest-item h4 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .quest-item p {
+            margin: 4px 0;
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        .quest-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: #5865f2;
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #4752c4;
+        }
+        .btn-success {
+            background: #3ba55d;
+            color: #fff;
+        }
+        .btn-danger {
+            background: #ed4245;
+            color: #fff;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        #quest-logs {
+            background: #1e1f22;
+            padding: 12px;
+            border-radius: 6px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 11px;
+            font-family: 'Consolas', monospace;
+            margin-top: 12px;
+        }
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px 0;
+        }
+        .log-info { color: #00aff4; }
+        .log-success { color: #43b581; }
+        .log-warning { color: #faa61a; }
+        .log-error { color: #f04747; }
+    `;
+
+    const styleEl = document.createElement('style');
+    styleEl.textContent = styles;
+    document.head.appendChild(styleEl);
+
+    const ui = document.createElement('div');
+    ui.id = 'quest-auto-ui';
+    ui.innerHTML = `
+        <div id="quest-auto-header">
+            <h3>⚡ Discord Quest Auto-Complete</h3>
+            <button id="quest-auto-close">×</button>
+        </div>
+        <div id="quest-auto-body">
+            <button class="btn btn-primary" style="width: 100%; margin-bottom: 12px;" onclick="questManager.loadQuests().then(window.updateQuestUI)">
+                🔄 Refresh Quests
+            </button>
+            <div id="quest-list"></div>
+            <div id="quest-logs"></div>
+        </div>
+    `;
+    document.body.appendChild(ui);
+
+    // Make draggable
+    let isDragging = false;
+    let currentX, currentY, initialX, initialY;
+    const header = document.getElementById('quest-auto-header');
+    
+    header.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        initialX = e.clientX - ui.offsetLeft;
+        initialY = e.clientY - ui.offsetTop;
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            currentX = e.clientX - initialX;
+            currentY = e.clientY - initialY;
+            ui.style.left = currentX + 'px';
+            ui.style.top = currentY + 'px';
+            ui.style.right = 'auto';
+        }
+    });
+    
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
+    // Close button
+    document.getElementById('quest-auto-close').addEventListener('click', () => {
+        ui.remove();
+        styleEl.remove();
+        delete window.DiscordQuestAutoComplete;
+        delete window.questManager;
+        delete window.updateQuestUI;
+    });
+
+    // Update UI function
+    window.updateQuestUI = function() {
+        const listEl = document.getElementById('quest-list');
+        const logsEl = document.getElementById('quest-logs');
+        
+        listEl.innerHTML = manager.activeQuests.map(quest => {
+            const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+            const taskName = ["WATCH_VIDEO", "WATCH_VIDEO_ON_MOBILE", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP", "PLAY_ACTIVITY"]
+                .find(x => taskConfig?.tasks?.[x] != null);
+            const isRunning = manager.running[quest.id];
+            
+            return `
+                <div class="quest-item">
+                    <h4>${quest.config.messages.questName}</h4>
+                    <p>📋 Type: ${taskName || 'Unknown'}</p>
+                    <p>🎁 Reward: ${quest.config.rewardCode?.skuId ? 'Available' : 'None'}</p>
+                    <div class="quest-actions">
+                        <button class="btn btn-success" onclick="questManager.autoCompleteQuest(questManager.activeQuests.find(q => q.id === '${quest.id}'))" ${isRunning ? 'disabled' : ''}>
+                            ${isRunning ? '⏳ Running...' : '▶️ Start'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        
+        logsEl.innerHTML = manager.logs.slice(-50).reverse().map(log => 
+            `<div class="log-entry log-${log.type}">[${log.timestamp}] ${log.message}</div>`
+        ).join('');
+    };
+
+    // Initial load
+    manager.loadQuests().then(window.updateQuestUI);
+    manager.log('🚀 Discord Quest Auto-Complete loaded!', 'success');
+})();
