@@ -1325,6 +1325,373 @@
                         <span class="log-time">${log.timestamp}</span>
                         <span class="log-message">${log.message}</span>
                     </div>
-                `).join('') || '<div class="empty-state"><div class="empty-state-icon">📭</div><h3>No Activity Yet</h3><p>Start completing quests to see activity here</p></div>'}
+        `).join('') || '<div class="empty-state"><div class="empty-state-icon">📭</div><h3>No Activity Yet</h3><p>Start completing quests to see activity here</p></div>'}
             </div>
         `,
+        
+        accounts: () => `
+            <div class="input-group">
+                <input type="text" id="token-input" placeholder="Paste Discord token here..." autocomplete="off">
+                <button class="btn btn-primary" onclick="window.addAccountToken()">
+                    ➕ Add Account
+                </button>
+            </div>
+            
+            <div class="section-header">
+                <h3>Accounts (${accountManager.accounts.length})</h3>
+                <button class="btn btn-secondary btn-icon" onclick="window.refreshAccountsInfo()">
+                    🔄
+                </button>
+            </div>
+            
+            <div id="accounts-list">
+                ${accountManager.accounts.length === 0 ? `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">👤</div>
+                        <h3>No Accounts Added</h3>
+                        <p>Add your first account token above to get started</p>
+                    </div>
+                ` : accountManager.accounts.map(acc => {
+                    const isCurrent = accountManager.currentAccount?.id === acc.id;
+                    const quests = questManager.activeQuests.get(acc.id) || [];
+                    return `
+                        <div class="account-card ${isCurrent ? 'current' : ''}">
+                            <div class="account-avatar">
+                                ${acc.username?.[0]?.toUpperCase() || '?'}
+                            </div>
+                            <div class="account-info">
+                                <h4>${acc.username || 'Loading...'}${acc.discriminator ? '#' + acc.discriminator : ''}</h4>
+                                <p>
+                                    ${quests.length} active quest${quests.length !== 1 ? 's' : ''}
+                                    ${isCurrent ? ' • <span class="badge badge-success">Current</span>' : ''}
+                                </p>
+                            </div>
+                            <div class="account-actions">
+                                <button class="btn btn-primary btn-icon" onclick="window.loadQuestsForAccount('${acc.id}')" title="Load Quests">
+                                    🔄
+                                </button>
+                                <button class="btn btn-success btn-icon" onclick="window.autoCompleteAccountQuests('${acc.id}')" title="Auto Complete">
+                                    ▶️
+                                </button>
+                                ${!isCurrent ? `
+                                    <button class="btn btn-danger btn-icon" onclick="window.removeAccount('${acc.id}')" title="Remove">
+                                        🗑️
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `,
+        
+        quests: () => {
+            const allQuests = Array.from(questManager.activeQuests.entries());
+            return `
+                <div class="section-header">
+                    <h3>All Quests (${allQuests.reduce((a,b) => a + b[1].length, 0)})</h3>
+                    <button class="btn btn-primary" onclick="window.refreshAllQuests()">
+                        🔄 Refresh All
+                    </button>
+                </div>
+                
+                ${allQuests.length === 0 ? `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🎯</div>
+                        <h3>No Quests Found</h3>
+                        <p>Load quests from your accounts in the Accounts tab</p>
+                    </div>
+                ` : allQuests.map(([accountId, quests]) => {
+                    const account = accountManager.accounts.find(a => a.id === accountId);
+                    return `
+                        <div style="margin-bottom: 24px;">
+                            <h4 style="margin: 0 0 12px 0; color: #b5bac1; font-size: 14px;">
+                                👤 ${account?.username || accountId}
+                            </h4>
+                            ${quests.map(quest => {
+                                const taskConfig = quest.config?.taskConfig ?? quest.config?.taskConfigV2;
+                                const taskName = ["WATCH_VIDEO", "WATCH_VIDEO_ON_MOBILE", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP", "PLAY_ACTIVITY"]
+                                    .find(x => taskConfig?.tasks?.[x] != null);
+                                const isRunning = questManager.running[quest.id];
+                                const target = taskConfig?.tasks?.[taskName]?.target || 0;
+                                const progress = quest.userStatus?.progress?.[taskName]?.value || quest.user_status?.progress?.[taskName]?.value || 0;
+                                const reward = quest.config?.rewardCode?.skuId ? '🎁 Reward Available' : 'No Reward';
+                                
+                                return `
+                                    <div class="quest-card ${isRunning ? 'running' : ''}">
+                                        <div class="quest-header">
+                                            <h4>${quest.config.messages.questName}</h4>
+                                            <span class="quest-type">${taskName || 'Unknown'}</span>
+                                        </div>
+                                        <div class="quest-meta">
+                                            <span>📊 ${Math.floor(progress)}/${target}s</span>
+                                            <span>${reward}</span>
+                                            <span>🆔 ${quest.id.slice(0, 8)}...</span>
+                                        </div>
+                                        <div class="quest-actions">
+                                            <button class="btn btn-success" onclick="window.startQuest('${quest.id}', '${accountId}')" ${isRunning ? 'disabled' : ''}>
+                                                ${isRunning ? '⏳ Running...' : '▶️ Start'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                }).join('')}
+            `;
+        },
+        
+        logs: () => `
+            <div class="section-header">
+                <h3>Activity Logs</h3>
+                <button class="btn btn-danger btn-icon" onclick="window.clearLogs()">
+                    🗑️
+                </button>
+            </div>
+            
+            <div id="logs-container">
+                ${questManager.logs.map(log => `
+                    <div class="log-entry log-${log.type}">
+                        <span class="log-time">${log.timestamp}</span>
+                        <span class="log-message">${log.message}</span>
+                    </div>
+                `).join('') || '<div class="empty-state"><div class="empty-state-icon">📭</div><h3>No Logs Yet</h3></div>'}
+            </div>
+        `,
+        
+        settings: () => `
+            <div class="section-header">
+                <h3>Settings</h3>
+            </div>
+            
+            <div style="background: #383a40; padding: 20px; border-radius: 8px; margin-bottom: 16px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                    <div>
+                        <h4 style="margin: 0 0 4px 0;">Auto Mode</h4>
+                        <p style="margin: 0; font-size: 13px; color: #b5bac1;">Automatically complete quests when loaded</p>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="auto-mode-toggle" ${questManager.autoMode ? 'checked' : ''} onchange="window.toggleAutoMode()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+            
+            <div style="background: #383a40; padding: 20px; border-radius: 8px; margin-bottom: 16px;">
+                <h4 style="margin: 0 0 12px 0;">Statistics</h4>
+                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; font-size: 13px;">
+                    <div>
+                        <span style="color: #b5bac1;">Total Quests:</span>
+                        <strong style="float: right;">${questManager.stats.total}</strong>
+                    </div>
+                    <div>
+                        <span style="color: #b5bac1;">Completed:</span>
+                        <strong style="float: right; color: #43b581;">${questManager.stats.completed}</strong>
+                    </div>
+                    <div>
+                        <span style="color: #b5bac1;">Failed:</span>
+                        <strong style="float: right; color: #f04747;">${questManager.stats.failed}</strong>
+                    </div>
+                    <div>
+                        <span style="color: #b5bac1;">Rewards:</span>
+                        <strong style="float: right; color: #5865f2;">${questManager.stats.rewards}</strong>
+                    </div>
+                </div>
+            </div>
+            
+  <div style="background: #383a40; padding: 20px; border-radius: 8px;">
+                <h4 style="margin: 0 0 12px 0;">Danger Zone</h4>
+                <button class="btn btn-danger" style="width: 100%;" onclick="window.resetAllData()">
+                    🗑️ Clear All Data & Accounts
+                </button>
+            </div>
+        
+    };
+
+    // Tab Navigation
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            const tabName = tab.dataset.tab;
+            document.getElementById('quest-pro-content').innerHTML = tabs[tabName]();
+        });
+    });
+
+    // Initialize Dashboard
+    document.getElementById('quest-pro-content').innerHTML = tabs.dashboard();
+
+    // Window Functions
+    window.updateQuestProUI = () => {
+        const activeTab = document.querySelector('.tab.active').dataset.tab;
+        document.getElementById('quest-pro-content').innerHTML = tabs[activeTab]();
+    };
+
+    window.addAccountToken = async () => {
+        const input = document.getElementById('token-input');
+        const token = input.value.trim();
+        
+        if (!token) {
+            questManager.log('❌ Please enter a token', 'error');
+            return;
+        }
+        
+        try {
+            accountManager.addAccount(token);
+            input.value = '';
+            questManager.log('✅ Account added! Loading info...', 'success');
+            await accountManager.loadAccountsInfo();
+            window.updateQuestProUI();
+        } catch (err) {
+            questManager.log(`❌ ${err.message}`, 'error');
+        }
+    };
+
+    window.removeAccount = (id) => {
+        if (confirm('Remove this account?')) {
+            accountManager.removeAccount(id);
+            questManager.activeQuests.delete(id);
+            questManager.log('Account removed', 'info');
+            window.updateQuestProUI();
+        }
+    };
+
+    window.refreshAccountsInfo = async () => {
+        questManager.log('🔄 Refreshing account info...', 'info');
+        await accountManager.loadAccountsInfo();
+        window.updateQuestProUI();
+    };
+
+    window.loadQuestsForAccount = async (accountId) => {
+        const account = accountManager.accounts.find(a => a.id === accountId);
+        if (!account) return;
+        
+        questManager.log(`🔄 Loading quests for ${account.username}...`, 'info', accountId);
+        
+        if (accountManager.currentAccount?.id === accountId) {
+            await questManager.loadQuestsCurrentAccount();
+        } else {
+            await questManager.loadQuestsForAccount(accountId, account.token);
+        }
+        
+        window.updateQuestProUI();
+    };
+
+    window.refreshAllQuests = async () => {
+        questManager.log('🔄 Refreshing all quests...', 'info');
+        
+        for (const account of accountManager.accounts) {
+            if (accountManager.currentAccount?.id === account.id) {
+                await questManager.loadQuestsCurrentAccount();
+            } else {
+                await questManager.loadQuestsForAccount(account.id, account.token);
+            }
+        }
+        
+        window.updateQuestProUI();
+    };
+
+    window.startQuest = async (questId, accountId) => {
+        const quests = questManager.activeQuests.get(accountId) || [];
+        const quest = quests.find(q => q.id === questId);
+        if (!quest) return;
+        
+        const account = accountManager.accounts.find(a => a.id === accountId);
+        const token = accountManager.currentAccount?.id === accountId ? null : account?.token;
+        
+        await questManager.autoCompleteQuest(quest, accountId, token);
+    };
+
+    window.autoCompleteAccountQuests = async (accountId) => {
+        const account = accountManager.accounts.find(a => a.id === accountId);
+        const token = accountManager.currentAccount?.id === accountId ? null : account?.token;
+        
+        await questManager.autoCompleteAllForAccount(accountId, token);
+    };
+
+    window.autoCompleteAll = async () => {
+        questManager.autoMode = true;
+        
+        for (const account of accountManager.accounts) {
+            const token = accountManager.currentAccount?.id === account.id ? null : account.token;
+            await questManager.autoCompleteAllForAccount(account.id, token);
+        }
+        
+        questManager.autoMode = false;
+    };
+
+    window.stopAllQuests = () => {
+        questManager.autoMode = false;
+        questManager.running = {};
+        questManager.log('⏹️ Stopped all quests', 'warning');
+        window.updateQuestProUI();
+    };
+
+    window.clearLogs = () => {
+        questManager.logs = [];
+        window.updateQuestProUI();
+    };
+
+    window.toggleAutoMode = () => {
+        questManager.autoMode = document.getElementById('auto-mode-toggle').checked;
+        questManager.log(`Auto mode: ${questManager.autoMode ? 'ON' : 'OFF'}`, 'info');
+    };
+
+    window.resetAllData = () => {
+        if (confirm('⚠️ This will delete all accounts and data. Continue?')) {
+            localStorage.removeItem('quest_pro_accounts');
+            accountManager.accounts = [];
+            questManager.activeQuests.clear();
+            questManager.logs = [];
+            questManager.stats = { total: 0, completed: 0, failed: 0, rewards: 0 };
+            questManager.log('🗑️ All data cleared', 'warning');
+            window.updateQuestProUI();
+        }
+    };
+
+    // Draggable
+    let isDragging = false, currentX, currentY, initialX, initialY;
+    const header = document.getElementById('quest-pro-header');
+    
+    header.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.header-controls')) return;
+        isDragging = true;
+        initialX = e.clientX - ui.offsetLeft;
+        initialY = e.clientY - ui.offsetTop;
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            e.preventDefault();
+            currentX = e.clientX - initialX;
+            currentY = e.clientY - initialY;
+            ui.style.left = currentX + 'px';
+            ui.style.top = currentY + 'px';
+            ui.style.right = 'auto';
+        }
+    });
+    
+    document.addEventListener('mouseup', () => isDragging = false);
+
+    // Close
+    document.getElementById('quest-pro-close').addEventListener('click', () => {
+        if (confirm('Close Discord Quest Pro?')) {
+            ui.remove();
+            styleEl.remove();
+            delete window.DiscordQuestPro;
+            delete window.accountManager;
+            delete window.questManager;
+        }
+    });
+
+    // Auto load current account
+    accountManager.loadAccountsInfo().then(async () => {
+        await questManager.loadQuestsCurrentAccount();
+        window.updateQuestProUI();
+    });
+
+    questManager.log('🚀 Discord Quest Pro v2.0 loaded!', 'success');
+    console.log('%c⚡ Discord Quest Pro v2.0', 'font-size: 24px; font-weight: bold; color: #5865f2;');
+    console.log('%cMulti-account quest automation ready!', 'font-size: 14px; color: #43b581;');
+})();
